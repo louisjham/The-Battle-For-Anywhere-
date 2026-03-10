@@ -1,0 +1,2350 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Game World Sandbox</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { background: #000; overflow: hidden; font-family: 'Segoe UI', sans-serif; }
+        #canvas-container { width: 100vw; height: 100vh; }
+        #location-picker {
+            position: fixed; top: 20px; left: 20px; z-index: 100; display: flex; gap: 8px;
+        }
+        #location-input {
+            padding: 8px 12px; border-radius: 6px;
+            border: 1px solid rgba(255,255,255,0.2);
+            background: rgba(0,0,0,0.7); color: white;
+            width: 250px; font-size: 14px; backdrop-filter: blur(10px);
+        }
+        #load-btn {
+            padding: 8px 16px; border-radius: 6px; border: none;
+            background: #4a9eff; color: white; cursor: pointer;
+            font-size: 14px; font-weight: 600;
+        }
+        #load-btn:hover { background: #2d7dd2; }
+        #gps-btn {
+            padding: 8px 12px; border-radius: 6px; border: none;
+            background: rgba(255,255,255,0.1); color: white; cursor: pointer;
+            font-size: 14px; backdrop-filter: blur(10px);
+            border: 1px solid rgba(255,255,255,0.2);
+        }
+        #gps-btn:hover { background: rgba(255,255,255,0.2); }
+        #status {
+            position: fixed; bottom: 20px; left: 20px;
+            color: rgba(255,255,255,0.6); font-size: 12px; z-index: 100;
+            background: rgba(0,0,0,0.5); padding: 8px 12px;
+            border-radius: 6px; backdrop-filter: blur(10px);
+        }
+        #loading {
+            position: fixed; inset: 0; background: rgba(0,0,0,0.85);
+            display: none; flex-direction: column;
+            align-items: center; justify-content: center;
+            z-index: 200; color: white; gap: 16px;
+        }
+        #loading.visible { display: flex; }
+        #loading-bar-container {
+            width: 300px; height: 4px;
+            background: rgba(255,255,255,0.2); border-radius: 2px;
+        }
+        #loading-bar {
+            height: 100%; background: #4a9eff; border-radius: 2px;
+            width: 0%; transition: width 0.3s ease;
+        }
+        #loading-text { font-size: 14px; color: rgba(255,255,255,0.7); }
+        #export-btn {
+            position: fixed; bottom: 20px; right: 320px;
+            padding: 8px 16px; border-radius: 6px;
+            border: 1px solid rgba(255,255,255,0.2);
+            background: rgba(0,0,0,0.7); color: white;
+            cursor: pointer; font-size: 13px; z-index: 100;
+            backdrop-filter: blur(10px);
+        }
+        #error-msg {
+            position: fixed; top: 70px; left: 20px;
+            background: rgba(200,50,50,0.9); color: white;
+            padding: 10px 16px; border-radius: 6px;
+            font-size: 13px; z-index: 100; display: none;
+            max-width: 400px;
+        }
+
+        /* Mobile Adjustments */
+        @media (max-width: 768px) {
+            #location-picker {
+                top: 10px; left: 10px; right: 10px;
+                flex-wrap: wrap;
+            }
+            #location-input {
+                width: 100%;
+                flex: 1 1 100%;
+            }
+            #load-btn, #gps-btn {
+                flex: 1;
+            }
+            #status {
+                bottom: 10px; left: 10px; right: 10px;
+                font-size: 10px; text-align: center;
+            }
+            #export-btn {
+                bottom: 50px; right: 10px; left: 10px;
+                text-align: center;
+            }
+            #error-msg {
+                top: 100px; left: 10px; right: 10px;
+                max-width: none;
+            }
+            /* Tweakpane mobile adjustments */
+            .tp-dfwv {
+                width: 280px !important;
+                right: 10px !important;
+                top: 100px !important;
+            }
+        }
+    </style>
+</head>
+<body>
+
+<div id="canvas-container"></div>
+
+<div id="location-picker">
+    <input id="location-input" type="text"
+        placeholder="lat,lng — e.g. 40.7128,-74.0060"
+        value="40.7128,-74.0060"/>
+    <button id="load-btn">Load World</button>
+    <button id="gps-btn" title="Use My Location">📍</button>
+</div>
+
+<div id="loading">
+    <div style="font-size:18px;font-weight:600;">Building World</div>
+    <div id="loading-bar-container"><div id="loading-bar"></div></div>
+    <div id="loading-text">Fetching map data...</div>
+</div>
+
+<div id="status">
+    🎮 Scroll to zoom &nbsp;|&nbsp; Left drag to orbit &nbsp;|&nbsp; Right drag to pan
+</div>
+
+<div id="error-msg"></div>
+
+<button id="export-btn">📋 Export Settings</button>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/tweakpane@3.1.0/dist/tweakpane.js"></script>
+
+<script type="module">
+import { GoogleGenAI } from "@google/genai";
+
+// ============================================================
+// HELPERS
+// ============================================================
+function showError(msg) {
+    const el = document.getElementById('error-msg');
+    el.textContent = msg;
+    el.style.display = 'block';
+    setTimeout(() => { el.style.display = 'none'; }, 6000);
+}
+
+function setStatus(msg) {
+    document.getElementById('status').textContent = msg;
+}
+
+function showLoading(visible) {
+    const el = document.getElementById('loading');
+    if (visible) {
+        el.classList.add('visible');
+    } else {
+        el.classList.remove('visible');
+    }
+}
+
+function setProgress(pct, text) {
+    document.getElementById('loading-bar').style.width = pct + '%';
+    document.getElementById('loading-text').textContent = text;
+}
+
+// ============================================================
+// CONFIG
+// ============================================================
+const CONFIG = {
+    world: {
+        radius: 600,
+        buildingHeightScale: 1.0,
+        roadWidth: 2.0,
+        groundSize: 2000,
+    },
+    style: {
+        skyColor: '#0a0e1a',
+        fogColor: '#0a0e1a',
+        fogNear: 400,
+        fogFar: 1200,
+        groundColor: '#1a2233',
+        buildingColor: '#2a3a5c',
+        buildingEmissive: '#0a1020',
+        buildingWireframe: false,
+        buildingOpacity: 1.0,
+        roadColor: '#0d1526',
+        poiColor: '#ff6b35',
+        poiGlowIntensity: 1.5,
+        ambientIntensity: 0.5,
+        ambientColor: '#334466',
+        directionalIntensity: 0.8,
+        directionalColor: '#aabbff',
+        accentColor: '#4a9eff',
+        accentIntensity: 2.0,
+    },
+    ui: {
+        primaryColor: '#4a9eff',
+        accentColor: '#ff6b35',
+        borderRadius: 6,
+    }
+};
+
+// ============================================================
+// COORDINATE UTILITY
+// ============================================================
+function latLngToWorld(lat, lng, centerLat, centerLng) {
+    const metersPerDegLat = 111320;
+    const metersPerDegLng = 111320 * Math.cos(centerLat * Math.PI / 180);
+    return {
+        x: (lng - centerLng) * metersPerDegLng,
+        z: -(lat - centerLat) * metersPerDegLat
+    };
+}
+
+// ============================================================
+// OSM DATA FETCHER
+// ============================================================
+async function fetchOSMData(lat, lng, radius) {
+    const query = `
+[out:json][timeout:30];
+(
+  way["building"](around:${radius},${lat},${lng});
+  way["highway"~"^(motorway|trunk|primary|secondary|tertiary|residential|path|footway)$"](around:${radius},${lat},${lng});
+  node["amenity"](around:${radius},${lat},${lng});
+  node["shop"](around:${radius},${lat},${lng});
+  node["historic"~"^(castle|fort|tower|monument)$"](around:${radius},${lat},${lng});
+);
+out body;
+>;
+out skel qt;
+    `.trim();
+
+    const resp = await fetch('https://overpass-api.de/api/interpreter', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: 'data=' + encodeURIComponent(query)
+    });
+
+    if (!resp.ok) throw new Error('Overpass API returned ' + resp.status);
+    return await resp.json();
+}
+
+function parseOSMData(raw, centerLat, centerLng) {
+    const nodes = {};
+    raw.elements.filter(e => e.type === 'node').forEach(n => {
+        nodes[n.id] = n;
+    });
+
+    const buildings = [], roads = [], pois = [];
+
+    raw.elements.filter(e => e.type === 'way').forEach(way => {
+        if (!way.nodes || !way.tags) return;
+        const points = way.nodes
+            .map(id => nodes[id])
+            .filter(Boolean)
+            .map(n => latLngToWorld(n.lat, n.lon, centerLat, centerLng));
+
+        if (points.length < 2) return;
+
+        if (way.tags.building) {
+            const levels = parseInt(way.tags['building:levels']) || (Math.floor(Math.random() * 4) + 1);
+            const height = parseFloat(way.tags['height']) || (levels * 3.5);
+            buildings.push({ points, height, tags: way.tags });
+        }
+
+        if (way.tags.highway) {
+            roads.push({ points, type: way.tags.highway, tags: way.tags });
+        }
+    });
+
+    raw.elements.filter(e => e.type === 'node' && e.tags).forEach(n => {
+        if (n.tags.amenity || n.tags.shop || n.tags.historic) {
+            pois.push({
+                pos: latLngToWorld(n.lat, n.lon, centerLat, centerLng),
+                tags: n.tags
+            });
+        }
+    });
+
+    return { buildings, roads, pois };
+}
+
+// ============================================================
+// BUILDING TEXTURE GENERATOR
+// ============================================================
+class TextureGen {
+    constructor() { this.cache = new Map(); }
+
+    get(type, floors) {
+        const key = type + '-' + floors;
+        if (this.cache.has(key)) return this.cache.get(key);
+        const tex = this.make(type, Math.max(1, floors));
+        this.cache.set(key, tex);
+        return tex;
+    }
+
+    make(type, floors) {
+        const c = document.createElement('canvas');
+        c.width = 512; c.height = 512;
+        const ctx = c.getContext('2d');
+        switch(type) {
+            case 'house':       this.house(ctx, c); break;
+            case 'office':
+            case 'commercial':  this.office(ctx, c, floors); break;
+            case 'industrial':
+            case 'warehouse':   this.industrial(ctx, c); break;
+            case 'church':
+            case 'cathedral':   this.church(ctx, c); break;
+            default:            this.apartment(ctx, c, floors);
+        }
+        const t = new THREE.CanvasTexture(c);
+        t.wrapS = THREE.RepeatWrapping;
+        t.wrapT = THREE.RepeatWrapping;
+        return t;
+    }
+
+    apartment(ctx, c, floors) {
+        const w = c.width, h = c.height;
+        const s = 40 + Math.floor(Math.random() * 30);
+        ctx.fillStyle = `rgb(${s+20},${s+30},${s+50})`;
+        ctx.fillRect(0, 0, w, h);
+
+        const fh = h / floors;
+        ctx.strokeStyle = 'rgba(0,0,0,0.3)';
+        ctx.lineWidth = 2;
+        for (let f = 0; f < floors; f++) {
+            ctx.beginPath(); ctx.moveTo(0, f*fh); ctx.lineTo(w, f*fh); ctx.stroke();
+        }
+
+        const cols = Math.max(1, Math.floor(w/80));
+        const ww = 40, wh = fh * 0.45;
+        const px = (w/cols - ww) / 2;
+        const py = fh * 0.2;
+
+        for (let f = 0; f < floors; f++) {
+            for (let col = 0; col < cols; col++) {
+                const wx = col*(w/cols)+px, wy = f*fh+py;
+                ctx.fillStyle = '#1a1a2e';
+                ctx.fillRect(wx-2, wy-2, ww+4, wh+4);
+                const lit = Math.random() > 0.4;
+                if (lit) {
+                    const g = ctx.createLinearGradient(wx,wy,wx+ww,wy+wh);
+                    g.addColorStop(0,'rgba(255,200,100,0.9)');
+                    g.addColorStop(1,'rgba(255,150,50,0.7)');
+                    ctx.fillStyle = g;
+                } else {
+                    ctx.fillStyle = 'rgba(10,20,40,0.95)';
+                }
+                ctx.fillRect(wx, wy, ww, wh);
+                if (lit) {
+                    ctx.fillStyle = 'rgba(255,255,255,0.15)';
+                    ctx.fillRect(wx, wy, ww*0.3, wh*0.4);
+                }
+            }
+        }
+        // ground floor
+        ctx.fillStyle = 'rgba(0,0,0,0.3)';
+        ctx.fillRect(0, h-fh, w, fh);
+        const dw=50, dh=fh*0.75, dx=w/2-25, dy=h-fh*0.85;
+        ctx.fillStyle = '#2a1a0a';
+        ctx.fillRect(dx, dy, dw, dh);
+        ctx.strokeStyle = '#4a3a2a'; ctx.lineWidth=3;
+        ctx.strokeRect(dx, dy, dw, dh);
+    }
+
+    house(ctx, c) {
+        const w=c.width, h=c.height;
+        const colors=['#c4a882','#b8956a','#d4b896','#a8c4a0','#c4b8a8'];
+        ctx.fillStyle = colors[Math.floor(Math.random()*colors.length)];
+        ctx.fillRect(0,0,w,h);
+
+        // brick pattern
+        ctx.strokeStyle = 'rgba(0,0,0,0.08)'; ctx.lineWidth=1;
+        for (let row=0; row<h/20; row++) {
+            const off=(row%2)*25, y=row*20;
+            ctx.beginPath(); ctx.moveTo(0,y); ctx.lineTo(w,y); ctx.stroke();
+            for (let col=-1; col<w/50+1; col++) {
+                const x=col*50+off;
+                ctx.beginPath(); ctx.moveTo(x,y); ctx.lineTo(x,y+20); ctx.stroke();
+            }
+        }
+
+        // windows
+        this.houseWindow(ctx, w*0.08, h*0.12, 110, 95);
+        this.houseWindow(ctx, w*0.58, h*0.12, 110, 95);
+        this.houseWindow(ctx, w*0.08, h*0.52, 110, 100);
+
+        // door
+        const dc=['#8B0000','#00008B','#006400','#4a3000','#8B4513'];
+        const dcol = dc[Math.floor(Math.random()*dc.length)];
+        ctx.fillStyle='#fff'; ctx.fillRect(w*0.54,h*0.48,106,h*0.52+6);
+        ctx.fillStyle=dcol; ctx.fillRect(w*0.55,h*0.5,100,h*0.5);
+        ctx.fillStyle='#FFD700';
+        ctx.beginPath(); ctx.arc(w*0.55+75,h*0.5+h*0.27,5,0,Math.PI*2); ctx.fill();
+        // fanlight
+        ctx.fillStyle='rgba(150,200,255,0.5)';
+        ctx.beginPath(); ctx.arc(w*0.55+50,h*0.5,50,Math.PI,0); ctx.fill();
+
+        ctx.fillStyle='rgba(0,0,0,0.2)'; ctx.fillRect(0,h*0.93,w,h*0.07);
+    }
+
+    houseWindow(ctx, x, y, width, height) {
+        ctx.fillStyle='#fff'; ctx.fillRect(x-4,y-4,width+8,height+8);
+        ctx.fillStyle='#ddd'; ctx.fillRect(x-6,y+height,width+12,8);
+        const pw=width/2-3, ph=height/2-3;
+        [[x+2,y+2],[x+width/2+1,y+2],[x+2,y+height/2+1],[x+width/2+1,y+height/2+1]]
+        .forEach(([px,py]) => {
+            ctx.fillStyle='rgba(150,200,255,0.65)'; ctx.fillRect(px,py,pw,ph);
+            ctx.fillStyle='rgba(255,255,255,0.3)'; ctx.fillRect(px,py,pw*0.4,ph*0.4);
+        });
+        ctx.fillStyle='#fff';
+        ctx.fillRect(x+width/2-1,y,3,height);
+        ctx.fillRect(x,y+height/2-1,width,3);
+    }
+
+    office(ctx, c, floors) {
+        const w=c.width, h=c.height;
+        ctx.fillStyle='#0a1520'; ctx.fillRect(0,0,w,h);
+        const cols=4, colW=w/cols, fh=h/floors;
+        ctx.strokeStyle='rgba(80,120,180,0.4)'; ctx.lineWidth=3;
+        for (let i=0;i<=cols;i++){ctx.beginPath();ctx.moveTo(i*colW,0);ctx.lineTo(i*colW,h);ctx.stroke();}
+        for (let i=0;i<=floors;i++){ctx.beginPath();ctx.moveTo(0,i*fh);ctx.lineTo(w,i*fh);ctx.stroke();}
+        for (let f=0;f<floors;f++) {
+            for (let col=0;col<cols;col++) {
+                const px=col*colW+4,py=f*fh+4,pw=colW-8,ph=fh-8;
+                if (Math.random()>0.3) {
+                    const g=ctx.createLinearGradient(px,py,px+pw,py+ph);
+                    g.addColorStop(0,'rgba(180,220,255,0.15)');
+                    g.addColorStop(0.5,'rgba(220,240,255,0.25)');
+                    g.addColorStop(1,'rgba(180,220,255,0.1)');
+                    ctx.fillStyle=g;
+                } else { ctx.fillStyle='rgba(20,40,80,0.8)'; }
+                ctx.fillRect(px,py,pw,ph);
+                ctx.fillStyle='rgba(255,255,255,0.05)'; ctx.fillRect(px,py,pw*0.15,ph);
+            }
+        }
+        ctx.fillStyle='rgba(150,200,255,0.25)'; ctx.fillRect(w*0.3,h*0.8,w*0.4,h*0.2);
+    }
+
+    industrial(ctx, c) {
+        const w=c.width,h=c.height;
+        ctx.fillStyle='#3a3a3a'; ctx.fillRect(0,0,w,h);
+        ctx.strokeStyle='rgba(255,255,255,0.04)'; ctx.lineWidth=4;
+        for(let x=0;x<w;x+=20){ctx.beginPath();ctx.moveTo(x,0);ctx.lineTo(x,h);ctx.stroke();}
+        for(let i=0;i<3;i++){
+            const wx=30+i*(w/3),wy=h*0.1,ww=w/3-40,wh=h*0.25;
+            ctx.fillStyle='#0a1a0a'; ctx.fillRect(wx,wy,ww,wh);
+            ctx.strokeStyle='#333'; ctx.lineWidth=3; ctx.strokeRect(wx,wy,ww,wh);
+        }
+        const dw=w*0.5,dh=h*0.38,dx=w*0.25,dy=h*0.58;
+        ctx.fillStyle='#2a2a2a'; ctx.fillRect(dx,dy,dw,dh);
+        ctx.strokeStyle='#1a1a1a'; ctx.lineWidth=3;
+        for(let i=0;i<8;i++){
+            const ly=dy+(dh/8)*i;
+            ctx.beginPath();ctx.moveTo(dx,ly);ctx.lineTo(dx+dw,ly);ctx.stroke();
+        }
+        ctx.strokeStyle='#555'; ctx.lineWidth=4; ctx.strokeRect(dx,dy,dw,dh);
+    }
+
+    church(ctx, c) {
+        const w=c.width,h=c.height;
+        ctx.fillStyle='#888880'; ctx.fillRect(0,0,w,h);
+        // stone
+        ctx.strokeStyle='rgba(0,0,0,0.15)'; ctx.lineWidth=2;
+        for(let row=0;row<h/30;row++){
+            const off=(row%2)*35,y=row*30;
+            ctx.beginPath();ctx.moveTo(0,y);ctx.lineTo(w,y);ctx.stroke();
+            for(let col=-1;col<w/70+1;col++){
+                const x=col*70+off;
+                ctx.beginPath();ctx.moveTo(x,y);ctx.lineTo(x,y+30);ctx.stroke();
+            }
+        }
+        // gothic windows
+        [w*0.1, w*0.65].forEach(x => {
+            ctx.fillStyle='#1a1a2e';
+            ctx.beginPath();
+            ctx.moveTo(x,h*0.15+180);ctx.lineTo(x,h*0.15+50);
+            ctx.arc(x+50,h*0.15+50,50,Math.PI,0);
+            ctx.lineTo(x+100,h*0.15+180);ctx.closePath();ctx.fill();
+            ctx.strokeStyle='#aaa';ctx.lineWidth=3;
+            ctx.beginPath();
+            ctx.moveTo(x,h*0.15+180);ctx.lineTo(x,h*0.15+50);
+            ctx.arc(x+50,h*0.15+50,50,Math.PI,0);
+            ctx.lineTo(x+100,h*0.15+180);ctx.stroke();
+        });
+        // rose window
+        ctx.fillStyle='#0a0a1e';
+        ctx.beginPath();ctx.arc(w*0.5,h*0.22,60,0,Math.PI*2);ctx.fill();
+        ['#ff224466','#2244ff66','#22ff4466','#ffaa0066'].forEach((col,i)=>{
+            for(let j=i;j<8;j+=4){
+                const ang=(j/8)*Math.PI*2;
+                ctx.fillStyle=col;
+                ctx.beginPath();ctx.moveTo(w*0.5,h*0.22);
+                ctx.arc(w*0.5,h*0.22,50,ang,ang+Math.PI/4);
+                ctx.closePath();ctx.fill();
+            }
+        });
+        ctx.strokeStyle='#aaa';ctx.lineWidth=4;
+        ctx.beginPath();ctx.arc(w*0.5,h*0.22,60,0,Math.PI*2);ctx.stroke();
+        // arched door
+        const ar=65;
+        ctx.fillStyle='#555544';
+        ctx.beginPath();ctx.moveTo(w*0.35-5,h);ctx.lineTo(w*0.35-5,h*0.55+ar);
+        ctx.arc(w*0.35+ar,h*0.55+ar,ar+5,Math.PI,0);
+        ctx.lineTo(w*0.35+ar*2+5,h);ctx.closePath();ctx.fill();
+        ctx.fillStyle='#3a2a0a';
+        ctx.beginPath();ctx.moveTo(w*0.35,h);ctx.lineTo(w*0.35,h*0.55+ar);
+        ctx.arc(w*0.35+ar,h*0.55+ar,ar,Math.PI,0);
+        ctx.lineTo(w*0.35+ar*2,h);ctx.closePath();ctx.fill();
+    }
+}
+
+// ============================================================
+// ROOF GENERATOR
+// ============================================================
+class RoofGen {
+
+    static make(type, points, baseH, tags) {
+        tags = tags || {};
+        const shape = tags['roof:shape'] || this.guessShape(type);
+        switch(shape) {
+            case 'gabled':    return this.gabled(points, baseH, tags);
+            case 'dome':      return this.dome(points, baseH);
+            case 'pyramidal': return this.pyramidal(points, baseH);
+            default:          return null;
+        }
+    }
+
+    static guessShape(type) {
+        const map = {
+            church:'gabled', cathedral:'gabled',
+            mosque:'dome', temple:'pyramidal'
+        };
+        return map[type] || 'flat';
+    }
+
+    static bounds(points) {
+        let x0=Infinity,x1=-Infinity,z0=Infinity,z1=-Infinity;
+        points.forEach(p=>{
+            x0=Math.min(x0,p.x);x1=Math.max(x1,p.x);
+            z0=Math.min(z0,p.z);z1=Math.max(z1,p.z);
+        });
+        return {x0,x1,z0,z1,cx:(x0+x1)/2,cz:(z0+z1)/2,w:x1-x0,d:z1-z0};
+    }
+
+    static gabled(points, baseH, tags) {
+        const g = new THREE.Group();
+        const b = this.bounds(points);
+        if(b.w<0.5||b.d<0.5) return g;
+
+        const rh = tags['roof:height'] ? parseFloat(tags['roof:height'])
+                                       : Math.max(b.w,b.d)*0.35;
+        const isLong = b.w > b.d;
+        const len = isLong?b.w:b.d;
+        const wid = isLong?b.d:b.w;
+
+        const shape=new THREE.Shape();
+        shape.moveTo(-wid/2,0); shape.lineTo(0,rh); shape.lineTo(wid/2,0);
+        shape.closePath();
+
+        const colors=[0x884422,0x993322,0x774433,0x556677,0x665544];
+        const col=colors[Math.floor(Math.random()*colors.length)];
+        const mesh=new THREE.Mesh(
+            new THREE.ExtrudeGeometry(shape,{depth:len,bevelEnabled:false}),
+            new THREE.MeshLambertMaterial({color:col})
+        );
+
+        if(isLong){
+            mesh.position.set(b.cx+wid/2,baseH,b.z0);
+            mesh.rotation.y=Math.PI/2;
+            mesh.rotation.z=Math.PI/2;
+        } else {
+            mesh.position.set(b.x0,baseH,b.cz-wid/2);
+            mesh.rotation.x=-Math.PI/2;
+        }
+        g.add(mesh);
+        return g;
+    }
+
+    static pyramidal(points, baseH) {
+        const g=new THREE.Group();
+        const b=this.bounds(points);
+        if(b.w<0.5||b.d<0.5) return g;
+        const rh=Math.min(b.w,b.d)*0.5;
+        const mesh=new THREE.Mesh(
+            new THREE.ConeGeometry(Math.max(b.w,b.d)*0.6,rh,4),
+            new THREE.MeshLambertMaterial({color:0x885533})
+        );
+        mesh.position.set(b.cx,baseH+rh/2,b.cz);
+        mesh.rotation.y=Math.PI/4;
+        g.add(mesh);
+        return g;
+    }
+
+    static dome(points, baseH) {
+        const g=new THREE.Group();
+        const b=this.bounds(points);
+        if(b.w<0.5||b.d<0.5) return g;
+        const r=Math.min(b.w,b.d)*0.5;
+        const mesh=new THREE.Mesh(
+            new THREE.SphereGeometry(r,16,8,0,Math.PI*2,0,Math.PI/2),
+            new THREE.MeshLambertMaterial({color:0x889933})
+        );
+        mesh.position.set(b.cx,baseH,b.cz);
+        g.add(mesh);
+        return g;
+    }
+}
+
+// ============================================================
+// BUILDING BUILDER
+// ============================================================
+class BuildingBuilder {
+    constructor(worldGroup) {
+        this.worldGroup = worldGroup;
+        this.texGen = new TextureGen();
+        this.meshes = [];
+    }
+
+    build(buildings) {
+        buildings.forEach(b => {
+            try { this.makeBuilding(b); }
+            catch(e) { /* skip bad geometry silently */ }
+        });
+    }
+
+    makeBuilding(b) {
+        if(!b.points||b.points.length<3) return;
+        const height = Math.max(3, b.height * CONFIG.world.buildingHeightScale);
+        const floors = Math.max(1, Math.round(height/3.5));
+        const type = this.detectType(b.tags);
+
+        const tex = this.texGen.get(type, floors);
+        const mat = new THREE.MeshLambertMaterial({
+            map: tex,
+            color: this.baseColor(type),
+            transparent: false,
+            opacity: 1.0,
+            side: THREE.DoubleSide // Ensure walls are visible from both sides
+        });
+
+        const wallGroup = new THREE.Group();
+
+        const verts = [];
+        const uvs = [];
+        const normals = [];
+        const indices = [];
+        let indexOffset = 0;
+
+        for(let i=0;i<b.points.length-1;i++){
+            const p1 = b.points[i];
+            const p2 = b.points[i+1];
+            const dx = p2.x - p1.x;
+            const dz = p2.z - p1.z;
+            const len = Math.sqrt(dx*dx + dz*dz);
+            if(len < 0.5) continue;
+
+            const nx = -dz / len;
+            const nz = dx / len;
+
+            const repeatX = Math.max(1, Math.round(len / 15));
+
+            verts.push(
+                p1.x, 0, p1.z,
+                p2.x, 0, p2.z,
+                p1.x, height, p1.z,
+                p2.x, height, p2.z
+            );
+
+            normals.push(
+                nx, 0, nz,
+                nx, 0, nz,
+                nx, 0, nz,
+                nx, 0, nz
+            );
+
+            uvs.push(
+                0, 0,
+                repeatX, 0,
+                0, 1,
+                repeatX, 1
+            );
+
+            indices.push(
+                indexOffset, indexOffset+1, indexOffset+2,
+                indexOffset+2, indexOffset+1, indexOffset+3
+            );
+            indexOffset += 4;
+        }
+
+        if (verts.length > 0) {
+            const geo = new THREE.BufferGeometry();
+            geo.setAttribute('position', new THREE.Float32BufferAttribute(verts, 3));
+            geo.setAttribute('normal', new THREE.Float32BufferAttribute(normals, 3));
+            geo.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+            geo.setIndex(indices);
+
+            const mesh = new THREE.Mesh(geo, mat);
+            mesh.castShadow = true;
+            mesh.receiveShadow = true;
+            wallGroup.add(mesh);
+        }
+
+        // roof cap (perfect polygon)
+        try {
+            const shape=new THREE.Shape();
+            // The shape is drawn in 2D (X, Y). We map world X to shape X, and world Z to shape Y.
+            shape.moveTo(b.points[0].x, -b.points[0].z);
+            for(let i=1;i<b.points.length;i++) {
+                shape.lineTo(b.points[i].x, -b.points[i].z);
+            }
+            shape.closePath();
+            const cap=new THREE.Mesh(
+                new THREE.ShapeGeometry(shape),
+                new THREE.MeshLambertMaterial({color:0x222233})
+            );
+            // Rotate the shape to lay flat on the XZ plane.
+            // Because we mapped Z to -Y in the shape, rotating by -PI/2 aligns it correctly.
+            cap.rotation.x = -Math.PI/2;
+            cap.position.y = height;
+            cap.receiveShadow = true;
+            wallGroup.add(cap);
+        } catch(e){}
+
+        this.worldGroup.add(wallGroup);
+        this.meshes.push(wallGroup);
+
+        const roof = RoofGen.make(type, b.points, height, b.tags);
+        if(roof){
+            this.worldGroup.add(roof);
+            this.meshes.push(roof);
+        }
+    }
+
+    detectType(tags) {
+        if(!tags) return 'residential';
+        const b=(tags.building||'').toLowerCase();
+        const a=(tags.amenity||'').toLowerCase();
+        if(['house','detached','semidetached_house','bungalow'].includes(b)) return 'house';
+        if(['apartments','residential','terrace'].includes(b)) return 'apartments';
+        if(['office','commercial','mixed_use'].includes(b)) return 'office';
+        if(['retail','shop','supermarket'].includes(b)) return 'commercial';
+        if(['warehouse','industrial','factory'].includes(b)) return 'industrial';
+        if(['church','cathedral','chapel'].includes(b)||a==='place_of_worship') return 'church';
+        if(b==='mosque') return 'mosque';
+        return 'residential';
+    }
+
+    baseColor(type) {
+        return {
+            house:0xc4a882,apartments:0x4a5a7c,office:0x2a4a6c,
+            commercial:0x6a4a3c,industrial:0x4a4a4a,
+            church:0x8a8a7a,mosque:0x9a9a7a,residential:0x5a6a8c
+        }[type]||0x4a5a7c;
+    }
+
+    clear() {
+        this.meshes.forEach(m=>{
+            m.traverse(c=>{
+                if(c.geometry) c.geometry.dispose();
+                if(c.material) c.material.dispose();
+            });
+            this.worldGroup.remove(m);
+        });
+        this.meshes=[];
+    }
+}
+
+// ============================================================
+// ROAD BUILDER
+// ============================================================
+class RoadBuilder {
+    constructor(worldGroup) {
+        this.worldGroup = worldGroup;
+        this.meshes = [];
+        // Make roads more defined with a solid color and no lighting effects
+        this.mat = new THREE.MeshBasicMaterial({
+            color: CONFIG.style.roadColor,
+            depthWrite: false // Prevent z-fighting with ground
+        });
+    }
+
+    build(roads) {
+        roads.forEach(r => {
+            if(r.points.length<2) return;
+            const widths={motorway:8,trunk:7,primary:6,secondary:5,
+                          tertiary:4,residential:3,path:1.5,footway:1.5};
+            const w=(widths[r.type]||2)*CONFIG.world.roadWidth;
+            const mesh=this.makeRoad(r.points,w);
+            if(mesh){
+                mesh.position.y=0.15;
+                // Ensure roads render on top of the ground
+                mesh.renderOrder = 1; 
+                this.worldGroup.add(mesh);
+                this.meshes.push(mesh);
+            }
+        });
+    }
+
+    makeRoad(points, width) {
+        const verts=[], idx=[];
+        for(let i=0;i<points.length-1;i++){
+            const a=points[i],b=points[i+1];
+            const dx=b.x-a.x,dz=b.z-a.z;
+            const len=Math.sqrt(dx*dx+dz*dz);
+            if(len===0) continue;
+            const nx=(-dz/len)*width/2,nz=(dx/len)*width/2;
+            const base=verts.length/3;
+            verts.push(a.x+nx,0,a.z+nz, a.x-nx,0,a.z-nz,
+                       b.x+nx,0,b.z+nz, b.x-nx,0,b.z-nz);
+            idx.push(base,base+1,base+2, base+1,base+3,base+2);
+        }
+        if(verts.length===0) return null;
+        const geo=new THREE.BufferGeometry();
+        geo.setAttribute('position',new THREE.Float32BufferAttribute(verts,3));
+        geo.setIndex(idx);
+        geo.computeVertexNormals();
+        return new THREE.Mesh(geo,this.mat);
+    }
+
+    clear() {
+        this.meshes.forEach(m=>{
+            m.geometry.dispose();
+            this.worldGroup.remove(m);
+        });
+        this.meshes=[];
+    }
+}
+
+// ============================================================
+// POI BUILDER
+// ============================================================
+class POIBuilder {
+    constructor(worldGroup) {
+        this.worldGroup = worldGroup;
+        this.meshes = [];
+        this.lights = [];
+    }
+
+    build(pois) {
+        const mat=new THREE.MeshLambertMaterial({
+            color:CONFIG.style.poiColor,
+            emissive:new THREE.Color(CONFIG.style.poiColor),
+            emissiveIntensity:0.4
+        });
+        this.mat=mat;
+
+        pois.slice(0,80).forEach(poi=>{
+            const geo=new THREE.CylinderGeometry(2,3,15,6);
+            const mesh=new THREE.Mesh(geo,mat);
+            mesh.position.set(poi.pos.x,7.5,poi.pos.z);
+            mesh.castShadow=true;
+            this.worldGroup.add(mesh);
+            this.meshes.push(mesh);
+
+            const light=new THREE.PointLight(CONFIG.style.poiColor,CONFIG.style.poiGlowIntensity,60);
+            light.position.set(poi.pos.x,22,poi.pos.z);
+            this.worldGroup.add(light);
+            this.lights.push(light);
+        });
+    }
+
+    update() {
+        this.meshes.forEach((m,i)=>{ m.rotation.y+=0.005+(i*0.0005); });
+    }
+
+    clear() {
+        this.meshes.forEach(m=>{ m.geometry.dispose(); this.worldGroup.remove(m); });
+        this.lights.forEach(l=>{ this.worldGroup.remove(l); });
+        this.meshes=[];
+        this.lights=[];
+    }
+}
+
+// ============================================================
+// UNITS (EMITTER, CRAWLER, DOOR, BYSTANDER)
+// ============================================================
+class Bystander {
+    constructor(scene, startPos) {
+        this.scene = scene;
+        this.group = new THREE.Group();
+        this.group.position.copy(startPos);
+        
+        // Body
+        const bodyGeo = new THREE.CylinderGeometry(0.3, 0.3, 1.5, 8);
+        bodyGeo.translate(0, 0.75, 0);
+        const bodyMat = new THREE.MeshLambertMaterial({ color: 0x2288cc });
+        this.body = new THREE.Mesh(bodyGeo, bodyMat);
+        this.body.castShadow = true;
+        this.group.add(this.body);
+
+        // Head
+        const headGeo = new THREE.SphereGeometry(0.35, 8, 8);
+        const headMat = new THREE.MeshLambertMaterial({ color: 0xffccaa });
+        this.head = new THREE.Mesh(headGeo, headMat);
+        this.head.position.y = 1.65;
+        this.head.castShadow = true;
+        this.group.add(this.head);
+
+        this.scene.add(this.group);
+
+        this.state = 'spawning';
+        this.time = 0;
+        this.group.scale.set(0, 0, 0);
+        
+        this.targetRotation = Math.random() * Math.PI * 2;
+        this.walkDirection = new THREE.Vector3(Math.sin(this.targetRotation), 0, Math.cos(this.targetRotation));
+        this.speed = 3; 
+        this.changeDirTimer = 2 + Math.random() * 3;
+    }
+
+    kill() {
+        if (this.state !== 'dying') {
+            this.state = 'dying';
+            this.time = 0;
+            this.spawnBlood();
+        }
+    }
+
+    spawnBlood() {
+        this.bloodParticles = [];
+        const geo = new THREE.BoxGeometry(0.2, 0.2, 0.2);
+        const mat = new THREE.MeshLambertMaterial({ color: 0xcc0000 });
+        for (let i = 0; i < 15; i++) {
+            const p = new THREE.Mesh(geo, mat);
+            // Spawn around the body
+            p.position.copy(this.group.position);
+            p.position.y += 1.0 + Math.random() * 0.5;
+            p.position.x += (Math.random() - 0.5) * 0.5;
+            p.position.z += (Math.random() - 0.5) * 0.5;
+            
+            // Random velocity outward and up
+            const vx = (Math.random() - 0.5) * 8;
+            const vy = Math.random() * 5 + 3;
+            const vz = (Math.random() - 0.5) * 8;
+            
+            this.scene.add(p);
+            this.bloodParticles.push({ mesh: p, vx, vy, vz, life: 2.0 });
+        }
+    }
+
+    update(dt) {
+        this.time += dt;
+
+        if (this.state === 'spawning') {
+            const s = Math.min(1, this.time / 0.5);
+            this.group.scale.set(s, s, s);
+            if (this.time > 0.5) {
+                this.state = 'walking';
+                this.time = 0;
+            }
+        } else if (this.state === 'walking') {
+            this.changeDirTimer -= dt;
+            if (this.changeDirTimer <= 0) {
+                this.targetRotation = Math.random() * Math.PI * 2;
+                this.walkDirection.set(Math.sin(this.targetRotation), 0, Math.cos(this.targetRotation));
+                this.changeDirTimer = 2 + Math.random() * 3;
+            }
+            
+            // Smooth rotation
+            const currentRot = this.group.rotation.y;
+            let diff = this.targetRotation - currentRot;
+            while (diff < -Math.PI) diff += Math.PI * 2;
+            while (diff > Math.PI) diff -= Math.PI * 2;
+            this.group.rotation.y += diff * 5 * dt;
+
+            this.group.position.addScaledVector(this.walkDirection, this.speed * dt);
+            
+            // Bobbing
+            this.body.position.y = Math.abs(Math.sin(this.time * 8)) * 0.2;
+            this.head.position.y = 1.65 + Math.abs(Math.sin(this.time * 8)) * 0.2;
+
+        } else if (this.state === 'dying') {
+            // Fall over
+            this.group.rotation.x = -Math.PI / 2 * Math.min(1, this.time * 3);
+            if (this.time > 2.0) {
+                this.isDead = true;
+            }
+        }
+        
+        // Update blood particles
+        if (this.bloodParticles) {
+            for (let i = this.bloodParticles.length - 1; i >= 0; i--) {
+                const p = this.bloodParticles[i];
+                p.life -= dt;
+                if (p.life <= 0) {
+                    this.scene.remove(p.mesh);
+                    p.mesh.geometry.dispose();
+                    p.mesh.material.dispose();
+                    this.bloodParticles.splice(i, 1);
+                } else {
+                    p.vy -= 15 * dt; // gravity
+                    p.mesh.position.x += p.vx * dt;
+                    p.mesh.position.y += p.vy * dt;
+                    p.mesh.position.z += p.vz * dt;
+                    
+                    // Bounce on ground
+                    if (p.mesh.position.y < 0.1) {
+                        p.mesh.position.y = 0.1;
+                        p.vy *= -0.3;
+                        p.vx *= 0.8;
+                        p.vz *= 0.8;
+                    }
+                    
+                    // Shrink as they die
+                    const s = Math.max(0, p.life / 2.0);
+                    p.mesh.scale.set(s, s, s);
+                }
+            }
+        }
+    }
+
+    dispose() {
+        this.scene.remove(this.group);
+        this.body.geometry.dispose();
+        this.body.material.dispose();
+        this.head.geometry.dispose();
+        this.head.material.dispose();
+        
+        if (this.bloodParticles) {
+            this.bloodParticles.forEach(p => {
+                this.scene.remove(p.mesh);
+                p.mesh.geometry.dispose();
+                p.mesh.material.dispose();
+            });
+            this.bloodParticles = [];
+        }
+    }
+}
+
+class Door {
+    constructor(scene, pos) {
+        this.scene = scene;
+        this.pos = pos;
+        
+        const geo = new THREE.BoxGeometry(3, 4, 0.5);
+        geo.translate(0, 2, 0);
+        const mat = new THREE.MeshLambertMaterial({ color: 0x8b4513 });
+        this.mesh = new THREE.Mesh(geo, mat);
+        this.mesh.position.copy(pos);
+        // Face a random direction
+        this.mesh.rotation.y = Math.random() * Math.PI * 2;
+        this.scene.add(this.mesh);
+
+        this.spawnTimer = 0;
+        this.spawnInterval = 8 + Math.random() * 5; // Spawn every 8-13 seconds
+    }
+
+    update(dt, bystanders) {
+        this.spawnTimer += dt;
+        if (this.spawnTimer > this.spawnInterval) {
+            this.spawnTimer = 0;
+            // Spawn slightly in front of the door
+            const spawnPos = this.pos.clone();
+            const forward = new THREE.Vector3(0, 0, 1).applyAxisAngle(new THREE.Vector3(0,1,0), this.mesh.rotation.y);
+            spawnPos.addScaledVector(forward, 2);
+            bystanders.push(new Bystander(this.scene, spawnPos));
+        }
+    }
+
+    dispose() {
+        this.scene.remove(this.mesh);
+        this.mesh.geometry.dispose();
+        this.mesh.material.dispose();
+    }
+}
+
+class Crawler {
+    constructor(scene, startPos) {
+        this.scene = scene;
+        this.group = new THREE.Group();
+        this.group.position.copy(startPos);
+        
+        // Body
+        const bodyGeo = new THREE.SphereGeometry(1.2, 8, 8);
+        const bodyMat = new THREE.MeshLambertMaterial({ color: 0x111111 });
+        this.body = new THREE.Mesh(bodyGeo, bodyMat);
+        this.body.position.y = 1.5;
+        this.body.castShadow = true;
+        this.group.add(this.body);
+
+        // Legs
+        this.legs = [];
+        const legGeo = new THREE.CylinderGeometry(0.15, 0.05, 3);
+        legGeo.translate(0, -1.5, 0); // pivot at top
+        const legMat = new THREE.MeshLambertMaterial({ color: 0x333333 });
+        
+        for (let i = 0; i < 6; i++) {
+            const leg = new THREE.Mesh(legGeo, legMat);
+            // Distribute legs on sides
+            const isRight = i % 2 === 0;
+            const sideOffset = isRight ? 1 : -1;
+            const zOffset = (Math.floor(i / 2) - 1) * 1.0; // -1, 0, 1
+            
+            leg.position.set(sideOffset * 1.0, 1.5, zOffset);
+            
+            // Initial rotation
+            leg.rotation.z = sideOffset * Math.PI / 4; // point outwards
+            leg.rotation.x = zOffset * 0.2; // point slightly forward/back
+            
+            leg.castShadow = true;
+            this.group.add(leg);
+            this.legs.push({ 
+                mesh: leg, 
+                sideOffset: sideOffset, 
+                zOffset: zOffset,
+                phase: (i % 3) * Math.PI * 0.6 // offset animation phase
+            });
+        }
+
+        // Eye (glow)
+        const eyeGeo = new THREE.SphereGeometry(0.3, 8, 8);
+        const eyeMat = new THREE.MeshBasicMaterial({ color: 0xff3300 });
+        this.eye = new THREE.Mesh(eyeGeo, eyeMat);
+        this.eye.position.set(0, 1.8, 1.0); // Facing +Z
+        this.group.add(this.eye);
+
+        this.scene.add(this.group);
+
+        this.state = 'spawning';
+        this.time = 0;
+        this.group.scale.set(0, 0, 0);
+        
+        // Random direction to walk
+        this.targetRotation = Math.random() * Math.PI * 2;
+        this.walkDirection = new THREE.Vector3(Math.sin(this.targetRotation), 0, Math.cos(this.targetRotation));
+        
+        this.speed = 8; // units per second
+        this.lifeTime = 0;
+        this.maxLifeTime = 15 + Math.random() * 10; // walks for 15-25 seconds
+    }
+
+    update(dt, bystanders) {
+        this.time += dt;
+        this.lifeTime += dt;
+
+        if (this.state === 'spawning') {
+            const s = Math.min(1, this.time / 1.0);
+            this.group.scale.set(s, s, s);
+            if (this.time > 1.0) {
+                this.state = 'looking';
+                this.time = 0;
+            }
+        } else if (this.state === 'looking') {
+            // Look around (rotate back and forth)
+            this.group.rotation.y = this.targetRotation + Math.sin(this.time * 4) * 0.5;
+            if (this.time > 2.0) {
+                this.state = 'walking';
+                this.time = 0;
+                this.group.rotation.y = this.targetRotation;
+            }
+        } else if (this.state === 'walking') {
+            // Aggro logic
+            let targetBystander = null;
+            let minDist = 25; // Aggro radius
+            
+            if (bystanders) {
+                bystanders.forEach(b => {
+                    if (b.isDead || b.state === 'dying') return;
+                    const dist = this.group.position.distanceTo(b.group.position);
+                    if (dist < minDist) {
+                        minDist = dist;
+                        targetBystander = b;
+                    }
+                });
+            }
+
+            if (targetBystander) {
+                // Steer towards bystander
+                const dir = new THREE.Vector3().subVectors(targetBystander.group.position, this.group.position);
+                dir.y = 0;
+                dir.normalize();
+                this.walkDirection.copy(dir);
+                this.targetRotation = Math.atan2(dir.x, dir.z);
+                
+                if (minDist < 3.0) {
+                    // Kill!
+                    targetBystander.kill();
+                    // Pick new random direction
+                    this.targetRotation = Math.random() * Math.PI * 2;
+                    this.walkDirection.set(Math.sin(this.targetRotation), 0, Math.cos(this.targetRotation));
+                }
+            }
+
+            // Smooth rotation towards targetRotation
+            let diff = this.targetRotation - this.group.rotation.y;
+            while (diff < -Math.PI) diff += Math.PI * 2;
+            while (diff > Math.PI) diff -= Math.PI * 2;
+            this.group.rotation.y += diff * 5 * dt;
+
+            this.group.position.addScaledVector(this.walkDirection, this.speed * dt);
+            
+            // Animate legs with a realistic tripod gait
+            // In a tripod gait, 3 legs move together (e.g. L1, R2, L3) while the other 3 support
+            const walkCycle = this.time * 12; // Speed of the cycle
+            
+            this.legs.forEach(leg => {
+                // Determine if this leg is in group A or group B for the tripod gait
+                // Group A: Left front, Right middle, Left back
+                // Group B: Right front, Left middle, Right back
+                const isGroupA = (leg.sideOffset === -1 && leg.zOffset === 1) || 
+                                 (leg.sideOffset === 1 && leg.zOffset === 0) || 
+                                 (leg.sideOffset === -1 && leg.zOffset === -1);
+                
+                // Offset the cycle by PI for group B
+                const phaseOffset = isGroupA ? 0 : Math.PI;
+                const localCycle = walkCycle + phaseOffset;
+                
+                // Lift leg (only positive values, so it lifts for half the cycle)
+                const lift = Math.max(0, Math.sin(localCycle));
+                
+                // Move leg forward/back (cosine wave, so it moves forward while lifted, backward while down)
+                const stride = Math.cos(localCycle);
+                
+                // Apply rotations
+                // Base outward angle is PI/4. We subtract lift to raise the leg.
+                leg.mesh.rotation.z = leg.sideOffset * (Math.PI / 4 - lift * 0.5);
+                
+                // Base forward/back angle depends on position. We add stride to move it.
+                // Multiply stride by a factor to control how far it reaches.
+                leg.mesh.rotation.x = leg.zOffset * 0.2 + stride * 0.5;
+            });
+
+            if (this.lifeTime > this.maxLifeTime) {
+                this.state = 'despawning';
+                this.time = 0;
+            }
+        } else if (this.state === 'despawning') {
+            const s = Math.max(0, 1 - this.time / 1.0);
+            this.group.scale.set(s, s, s);
+            if (this.time > 1.0) {
+                this.isDead = true;
+            }
+        }
+    }
+
+    dispose() {
+        this.scene.remove(this.group);
+        this.body.geometry.dispose();
+        this.body.material.dispose();
+        this.legs[0].mesh.geometry.dispose();
+        this.legs[0].mesh.material.dispose();
+        this.eye.geometry.dispose();
+        this.eye.material.dispose();
+    }
+}
+
+class Emitter {
+    constructor(scene, pos) {
+        this.scene = scene;
+        this.pos = pos;
+        
+        const geo = new THREE.OctahedronGeometry(4, 0);
+        const mat = new THREE.MeshLambertMaterial({ 
+            color: 0xff00ff, 
+            emissive: 0xaa00aa,
+            emissiveIntensity: 0.8,
+            wireframe: true
+        });
+        this.mesh = new THREE.Mesh(geo, mat);
+        this.mesh.position.copy(pos);
+        this.mesh.position.y = 4; // half height
+        this.scene.add(this.mesh);
+
+        // Core inside
+        const coreGeo = new THREE.OctahedronGeometry(2, 0);
+        const coreMat = new THREE.MeshLambertMaterial({
+            color: 0xffffff,
+            emissive: 0xff00ff,
+            emissiveIntensity: 1.0
+        });
+        this.core = new THREE.Mesh(coreGeo, coreMat);
+        this.core.position.copy(pos);
+        this.core.position.y = 4;
+        this.scene.add(this.core);
+
+        const light = new THREE.PointLight(0xff00ff, 2, 80);
+        light.position.copy(pos);
+        light.position.y = 6;
+        this.scene.add(light);
+        this.light = light;
+
+        this.time = 0;
+        this.spawnTimer = 0;
+        this.spawnInterval = 1.5; // spawn every 1.5 seconds (increased from 4)
+    }
+
+    update(dt, crawlers) {
+        this.time += dt;
+        
+        // Rotate and bob
+        this.mesh.rotation.y += dt * 0.5;
+        this.mesh.rotation.z += dt * 0.3;
+        this.core.rotation.y -= dt * 1.0;
+        
+        const bob = Math.sin(this.time * 2) * 0.5;
+        this.mesh.position.y = 4 + bob;
+        this.core.position.y = 4 + bob;
+
+        this.spawnTimer += dt;
+        if (this.spawnTimer > this.spawnInterval) {
+            this.spawnTimer = 0;
+            crawlers.push(new Crawler(this.scene, new THREE.Vector3(this.pos.x, 0, this.pos.z)));
+        }
+    }
+
+    dispose() {
+        this.scene.remove(this.mesh);
+        this.scene.remove(this.core);
+        this.scene.remove(this.light);
+        this.mesh.geometry.dispose();
+        this.mesh.material.dispose();
+        this.core.geometry.dispose();
+        this.core.material.dispose();
+    }
+}
+
+class Portal {
+    constructor(scene, pos) {
+        this.scene = scene;
+        this.pos = pos;
+        
+        // Swirling mystical portal
+        const geo = new THREE.TorusGeometry(3, 0.5, 16, 32);
+        const mat = new THREE.MeshLambertMaterial({ 
+            color: 0x00ffff, 
+            emissive: 0x008888,
+            emissiveIntensity: 1.0,
+            transparent: true,
+            opacity: 0.8
+        });
+        this.mesh = new THREE.Mesh(geo, mat);
+        this.mesh.position.copy(pos);
+        this.mesh.position.y = 5;
+        this.mesh.rotation.x = Math.PI / 2;
+        this.scene.add(this.mesh);
+
+        const light = new THREE.PointLight(0x00ffff, 2, 50);
+        light.position.copy(this.mesh.position);
+        this.scene.add(light);
+        this.light = light;
+
+        this.spawnTimer = 0;
+        this.spawnInterval = 15 + Math.random() * 10;
+    }
+
+    update(dt, warlocks) {
+        this.mesh.rotation.z += dt * 2.0;
+        this.mesh.scale.setScalar(1 + Math.sin(Date.now() * 0.005) * 0.1);
+        
+        this.spawnTimer += dt;
+        if (this.spawnTimer > this.spawnInterval) {
+            this.spawnTimer = 0;
+            warlocks.push(new Warlock(this.scene, new THREE.Vector3(this.pos.x, 0, this.pos.z)));
+        }
+    }
+
+    dispose() {
+        this.scene.remove(this.mesh);
+        this.scene.remove(this.light);
+        this.mesh.geometry.dispose();
+        this.mesh.material.dispose();
+    }
+}
+
+class Fireball {
+    constructor(scene, startPos, targetPos) {
+        this.scene = scene;
+        const geo = new THREE.SphereGeometry(0.5, 8, 8);
+        const mat = new THREE.MeshBasicMaterial({ color: 0xff4400 });
+        this.mesh = new THREE.Mesh(geo, mat);
+        this.mesh.position.copy(startPos);
+        this.scene.add(this.mesh);
+
+        this.light = new THREE.PointLight(0xff4400, 2, 10);
+        this.scene.add(this.light);
+
+        this.direction = new THREE.Vector3().subVectors(targetPos, startPos).normalize();
+        this.speed = 25;
+        this.life = 3.0;
+        this.isDead = false;
+    }
+
+    update(dt, crawlers) {
+        this.life -= dt;
+        if (this.life <= 0) this.isDead = true;
+
+        this.mesh.position.addScaledVector(this.direction, this.speed * dt);
+        this.light.position.copy(this.mesh.position);
+
+        // Check collision with crawlers
+        for (let c of crawlers) {
+            if (c.state === 'despawning' || c.isDead) continue;
+            if (this.mesh.position.distanceTo(c.group.position) < 3.0) {
+                c.state = 'despawning';
+                c.time = 0;
+                this.isDead = true;
+                break;
+            }
+        }
+    }
+
+    dispose() {
+        this.scene.remove(this.mesh);
+        this.scene.remove(this.light);
+        this.mesh.geometry.dispose();
+        this.mesh.material.dispose();
+    }
+}
+
+class Firework {
+    constructor(scene, pos) {
+        this.scene = scene;
+        this.particles = [];
+        const colors = [0xff0000, 0x00ff00, 0x0000ff, 0xffff00, 0xff00ff, 0x00ffff];
+        const color = colors[Math.floor(Math.random() * colors.length)];
+        const geo = new THREE.BoxGeometry(0.2, 0.2, 0.2);
+        const mat = new THREE.MeshBasicMaterial({ color: color });
+        
+        for (let i = 0; i < 30; i++) {
+            const p = new THREE.Mesh(geo, mat);
+            p.position.copy(pos);
+            const theta = Math.random() * Math.PI * 2;
+            const phi = Math.random() * Math.PI;
+            const speed = 5 + Math.random() * 10;
+            const vx = Math.sin(phi) * Math.cos(theta) * speed;
+            const vy = Math.cos(phi) * speed;
+            const vz = Math.sin(phi) * Math.sin(theta) * speed;
+            this.scene.add(p);
+            this.particles.push({ mesh: p, vx, vy, vz, life: 1.5 });
+        }
+        this.isDead = false;
+    }
+
+    update(dt) {
+        let allDead = true;
+        this.particles.forEach(p => {
+            p.life -= dt;
+            if (p.life > 0) {
+                allDead = false;
+                p.vy -= 9.8 * dt;
+                p.mesh.position.x += p.vx * dt;
+                p.mesh.position.y += p.vy * dt;
+                p.mesh.position.z += p.vz * dt;
+                p.mesh.scale.setScalar(p.life / 1.5);
+            } else {
+                p.mesh.visible = false;
+            }
+        });
+        if (allDead) this.isDead = true;
+    }
+
+    dispose() {
+        this.particles.forEach(p => {
+            this.scene.remove(p.mesh);
+            p.mesh.geometry.dispose();
+            p.mesh.material.dispose();
+        });
+    }
+}
+
+class Zombie {
+    constructor(scene, startPos) {
+        this.scene = scene;
+        this.group = new THREE.Group();
+        this.group.position.copy(startPos);
+        
+        const bodyGeo = new THREE.CylinderGeometry(0.3, 0.3, 1.5, 8);
+        bodyGeo.translate(0, 0.75, 0);
+        const bodyMat = new THREE.MeshLambertMaterial({ color: 0x446644 });
+        this.body = new THREE.Mesh(bodyGeo, bodyMat);
+        this.group.add(this.body);
+
+        const headGeo = new THREE.SphereGeometry(0.35, 8, 8);
+        const headMat = new THREE.MeshLambertMaterial({ color: 0x88aa88 });
+        this.head = new THREE.Mesh(headGeo, headMat);
+        this.head.position.y = 1.65;
+        this.group.add(this.head);
+
+        this.scene.add(this.group);
+        this.time = 0;
+        this.isDead = false;
+        this.targetRotation = Math.random() * Math.PI * 2;
+        this.walkDirection = new THREE.Vector3(Math.sin(this.targetRotation), 0, Math.cos(this.targetRotation));
+        this.speed = 1.5;
+        this.life = 30 + Math.random() * 20;
+    }
+
+    update(dt, crawlers) {
+        this.time += dt;
+        this.life -= dt;
+        if (this.life <= 0) this.isDead = true;
+
+        // Wander slowly
+        if (Math.random() < 0.01) {
+            this.targetRotation = Math.random() * Math.PI * 2;
+            this.walkDirection.set(Math.sin(this.targetRotation), 0, Math.cos(this.targetRotation));
+        }
+
+        this.group.rotation.y += (this.targetRotation - this.group.rotation.y) * 2 * dt;
+        this.group.position.addScaledVector(this.walkDirection, this.speed * dt);
+        
+        // Hunched bobbing
+        this.group.rotation.x = 0.3; 
+        this.body.position.y = Math.abs(Math.sin(this.time * 4)) * 0.1;
+        
+        // Attack crawlers if very close
+        crawlers.forEach(c => {
+            if (c.isDead || c.state === 'despawning') return;
+            if (this.group.position.distanceTo(c.group.position) < 4.0) {
+                c.state = 'despawning';
+                c.time = 0;
+            }
+        });
+    }
+
+    dispose() {
+        this.scene.remove(this.group);
+        this.body.geometry.dispose();
+        this.body.material.dispose();
+        this.head.geometry.dispose();
+        this.head.material.dispose();
+    }
+}
+
+class Warlock {
+    constructor(scene, startPos) {
+        this.scene = scene;
+        this.group = new THREE.Group();
+        this.group.position.copy(startPos);
+        
+        // Robe
+        const bodyGeo = new THREE.CylinderGeometry(0.2, 0.6, 2, 8);
+        bodyGeo.translate(0, 1, 0);
+        const bodyMat = new THREE.MeshLambertMaterial({ color: 0x440066 });
+        this.body = new THREE.Mesh(bodyGeo, bodyMat);
+        this.group.add(this.body);
+
+        // Head
+        const headGeo = new THREE.SphereGeometry(0.35, 8, 8);
+        const headMat = new THREE.MeshLambertMaterial({ color: 0xffccaa });
+        this.head = new THREE.Mesh(headGeo, headMat);
+        this.head.position.y = 2.1;
+        this.group.add(this.head);
+
+        // Hat
+        const hatGeo = new THREE.ConeGeometry(0.5, 1, 8);
+        hatGeo.translate(0, 0.5, 0);
+        const hatMat = new THREE.MeshLambertMaterial({ color: 0x220033 });
+        const hat = new THREE.Mesh(hatGeo, hatMat);
+        hat.position.y = 2.4;
+        this.group.add(hat);
+
+        this.scene.add(this.group);
+        this.time = 0;
+        this.isDead = false;
+        this.state = 'wandering';
+        
+        this.targetRotation = Math.random() * Math.PI * 2;
+        this.walkDirection = new THREE.Vector3(Math.sin(this.targetRotation), 0, Math.cos(this.targetRotation));
+        this.speed = 4;
+
+        this.raiseDeadTimer = 0;
+        this.fireballTimer = 0;
+        this.fireworkTimer = 0;
+    }
+
+    update(dt, bystanders, crawlers, zombies, fireballs, fireworks) {
+        this.time += dt;
+        
+        // Movement
+        if (Math.random() < 0.02) {
+            this.targetRotation = Math.random() * Math.PI * 2;
+            this.walkDirection.set(Math.sin(this.targetRotation), 0, Math.cos(this.targetRotation));
+        }
+        this.group.rotation.y += (this.targetRotation - this.group.rotation.y) * 3 * dt;
+        this.group.position.addScaledVector(this.walkDirection, this.speed * dt);
+        
+        // Bobbing
+        this.group.position.y = Math.sin(this.time * 3) * 0.2 + 0.2;
+
+        // Raise Dead
+        this.raiseDeadTimer += dt;
+        if (this.raiseDeadTimer > 3.0) {
+            this.raiseDeadTimer = 0;
+            bystanders.forEach(b => {
+                if (b.state === 'dying' && !b.raised) {
+                    if (this.group.position.distanceTo(b.group.position) < 20) {
+                        b.raised = true;
+                        zombies.push(new Zombie(this.scene, b.group.position.clone()));
+                        // Flash effect
+                        fireworks.push(new Firework(this.scene, b.group.position.clone().add(new THREE.Vector3(0,2,0))));
+                    }
+                }
+            });
+        }
+
+        // Fireball
+        this.fireballTimer += dt;
+        if (this.fireballTimer > 4.0) {
+            let target = null;
+            let minDist = 50;
+            crawlers.forEach(c => {
+                if (c.isDead || c.state === 'despawning') return;
+                const dist = this.group.position.distanceTo(c.group.position);
+                if (dist < minDist) {
+                    minDist = dist;
+                    target = c;
+                }
+            });
+            if (target) {
+                this.fireballTimer = 0;
+                fireballs.push(new Fireball(this.scene, this.group.position.clone().add(new THREE.Vector3(0,2,0)), target.group.position));
+            }
+        }
+
+        // Fireworks
+        this.fireworkTimer += dt;
+        if (this.fireworkTimer > 10.0) {
+            this.fireworkTimer = 0;
+            fireworks.push(new Firework(this.scene, this.group.position.clone().add(new THREE.Vector3(0, 10 + Math.random() * 10, 0))));
+        }
+    }
+
+    dispose() {
+        this.scene.remove(this.group);
+        this.body.geometry.dispose();
+        this.body.material.dispose();
+        this.head.geometry.dispose();
+        this.head.material.dispose();
+    }
+}
+
+class UnitManager {
+    constructor(worldGroup) {
+        this.worldGroup = worldGroup;
+        this.emitters = [];
+        this.crawlers = [];
+        this.doors = [];
+        this.bystanders = [];
+        this.portals = [];
+        this.warlocks = [];
+        this.zombies = [];
+        this.fireballs = [];
+        this.fireworks = [];
+    }
+
+    build(pois) {
+        // Create an emitter at the center (0,0)
+        this.emitters.push(new Emitter(this.worldGroup, new THREE.Vector3(0, 0, 0)));
+        
+        // Add a few more emitters at random POIs
+        if (pois && pois.length > 0) {
+            let count = 0;
+            for(let i=0; i<pois.length; i++) {
+                const p = pois[i].pos;
+                // Avoid placing exactly at 0,0 if we already did
+                if (Math.abs(p.x) > 20 || Math.abs(p.z) > 20) {
+                    this.emitters.push(new Emitter(this.worldGroup, new THREE.Vector3(p.x, 0, p.z)));
+                    count++;
+                }
+                if (count >= 10) break; // Max 11 emitters total
+            }
+            
+            // Add portals (Warlock spawners) to 5% of POIs
+            let pCount = 0;
+            for(let i=0; i<pois.length; i++) {
+                if (Math.random() < 0.05) {
+                    this.portals.push(new Portal(this.worldGroup, new THREE.Vector3(pois[i].pos.x, 0, pois[i].pos.z)));
+                    pCount++;
+                }
+                if (pCount >= 5) break;
+            }
+
+            // Add doors to 10% of POIs
+            for(let i=0; i<pois.length; i++) {
+                if (Math.random() < 0.10) {
+                    // Offset slightly from POI center
+                    const doorPos = new THREE.Vector3(pois[i].pos.x, 0, pois[i].pos.z);
+                    doorPos.x += (Math.random() - 0.5) * 10;
+                    doorPos.z += (Math.random() - 0.5) * 10;
+                    this.doors.push(new Door(this.worldGroup, doorPos));
+                }
+            }
+        }
+    }
+
+    update(dt) {
+        this.emitters.forEach(e => e.update(dt, this.crawlers));
+        this.doors.forEach(d => d.update(dt, this.bystanders));
+        this.portals.forEach(p => p.update(dt, this.warlocks));
+        
+        for (let i = this.warlocks.length - 1; i >= 0; i--) {
+            const w = this.warlocks[i];
+            w.update(dt, this.bystanders, this.crawlers, this.zombies, this.fireballs, this.fireworks);
+            if (w.isDead) {
+                w.dispose();
+                this.warlocks.splice(i, 1);
+            }
+        }
+
+        for (let i = this.zombies.length - 1; i >= 0; i--) {
+            const z = this.zombies[i];
+            z.update(dt, this.crawlers);
+            if (z.isDead) {
+                z.dispose();
+                this.zombies.splice(i, 1);
+            }
+        }
+
+        for (let i = this.fireballs.length - 1; i >= 0; i--) {
+            const f = this.fireballs[i];
+            f.update(dt, this.crawlers);
+            if (f.isDead) {
+                f.dispose();
+                this.fireballs.splice(i, 1);
+            }
+        }
+
+        for (let i = this.fireworks.length - 1; i >= 0; i--) {
+            const f = this.fireworks[i];
+            f.update(dt);
+            if (f.isDead) {
+                f.dispose();
+                this.fireworks.splice(i, 1);
+            }
+        }
+
+        for (let i = this.crawlers.length - 1; i >= 0; i--) {
+            const c = this.crawlers[i];
+            c.update(dt, this.bystanders);
+            if (c.isDead) {
+                c.dispose();
+                this.crawlers.splice(i, 1);
+            }
+        }
+        
+        for (let i = this.bystanders.length - 1; i >= 0; i--) {
+            const b = this.bystanders[i];
+            b.update(dt);
+            if (b.isDead) {
+                b.dispose();
+                this.bystanders.splice(i, 1);
+            }
+        }
+    }
+
+    clear() {
+        this.emitters.forEach(e => e.dispose());
+        this.crawlers.forEach(c => c.dispose());
+        this.doors.forEach(d => d.dispose());
+        this.bystanders.forEach(b => b.dispose());
+        this.portals.forEach(p => p.dispose());
+        this.warlocks.forEach(w => w.dispose());
+        this.zombies.forEach(z => z.dispose());
+        this.fireballs.forEach(f => f.dispose());
+        this.fireworks.forEach(f => f.dispose());
+        
+        this.emitters = [];
+        this.crawlers = [];
+        this.doors = [];
+        this.bystanders = [];
+        this.portals = [];
+        this.warlocks = [];
+        this.zombies = [];
+        this.fireballs = [];
+        this.fireworks = [];
+    }
+}
+
+// ============================================================
+// MAIN SANDBOX
+// ============================================================
+class Sandbox {
+    constructor() {
+        this.osmData = null;
+        this.centerLat = 40.7128;
+        this.centerLng = -74.0060;
+        this.isLoading = false;
+
+        this.setupRenderer();
+        this.setupScene();
+        this.setupCamera();
+        this.setupControls();
+        this.setupLighting();
+        this.setupBuilders();
+        this.setupUI();
+        this.setupEvents();
+        this.animate();
+
+        // load default location
+        this.loadWorld(this.centerLat, this.centerLng);
+    }
+
+    setupRenderer() {
+        this.renderer = new THREE.WebGLRenderer({antialias:true,powerPreference:'high-performance'});
+        this.renderer.setSize(window.innerWidth,window.innerHeight);
+        this.renderer.setPixelRatio(Math.min(window.devicePixelRatio,2));
+        this.renderer.shadowMap.enabled=true;
+        this.renderer.shadowMap.type=THREE.PCFSoftShadowMap;
+        this.renderer.outputEncoding=THREE.sRGBEncoding;
+        this.renderer.toneMapping=THREE.ACESFilmicToneMapping;
+        this.renderer.toneMappingExposure=1.0;
+        document.getElementById('canvas-container').appendChild(this.renderer.domElement);
+    }
+
+    setupScene() {
+        this.scene=new THREE.Scene();
+        this.scene.background=new THREE.Color(CONFIG.style.skyColor);
+        this.scene.fog=new THREE.Fog(CONFIG.style.fogColor,CONFIG.style.fogNear,CONFIG.style.fogFar);
+        this.worldGroup=new THREE.Group();
+        this.scene.add(this.worldGroup);
+    }
+
+    setupCamera() {
+        this.camera=new THREE.PerspectiveCamera(60,window.innerWidth/window.innerHeight,0.1,5000);
+        this.camera.position.set(0,300,300);
+        this.camera.lookAt(0,0,0);
+    }
+
+    setupControls() {
+        this.controls=new THREE.OrbitControls(this.camera,this.renderer.domElement);
+        this.controls.enableDamping=true;
+        this.controls.dampingFactor=0.05;
+        this.controls.minDistance=20;
+        this.controls.maxDistance=1500;
+        this.controls.maxPolarAngle=Math.PI/2.1;
+    }
+
+    setupLighting() {
+        this.ambientLight=new THREE.AmbientLight(CONFIG.style.ambientColor,CONFIG.style.ambientIntensity);
+        this.scene.add(this.ambientLight);
+
+        this.dirLight=new THREE.DirectionalLight(CONFIG.style.directionalColor,CONFIG.style.directionalIntensity);
+        this.dirLight.position.set(200,400,200);
+        this.dirLight.castShadow=true;
+        this.dirLight.shadow.mapSize.width=2048;
+        this.dirLight.shadow.mapSize.height=2048;
+        this.dirLight.shadow.camera.near=0.5;
+        this.dirLight.shadow.camera.far=1500;
+        this.dirLight.shadow.camera.left=-600;
+        this.dirLight.shadow.camera.right=600;
+        this.dirLight.shadow.camera.top=600;
+        this.dirLight.shadow.camera.bottom=-600;
+        this.scene.add(this.dirLight);
+
+        this.accent1=new THREE.PointLight(CONFIG.style.accentColor,CONFIG.style.accentIntensity,300);
+        this.accent1.position.set(-100,80,-100);
+        this.scene.add(this.accent1);
+
+        this.accent2=new THREE.PointLight(CONFIG.style.accentColor,CONFIG.style.accentIntensity*0.7,300);
+        this.accent2.position.set(100,60,100);
+        this.scene.add(this.accent2);
+    }
+
+    setupBuilders() {
+        this.buildingBuilder = new BuildingBuilder(this.worldGroup);
+        this.roadBuilder     = new RoadBuilder(this.worldGroup);
+        this.poiBuilder      = new POIBuilder(this.worldGroup);
+        this.unitManager     = new UnitManager(this.worldGroup);
+    }
+
+    // ---- LOAD WORLD ----
+    async loadWorld(lat, lng) {
+        if(this.isLoading) return;
+        this.isLoading = true;
+        showLoading(true);
+        setProgress(5,'Connecting to OpenStreetMap...');
+
+        try {
+            setProgress(15,'Fetching map data...');
+            const raw = await fetchOSMData(lat, lng, CONFIG.world.radius);
+
+            setProgress(45,'Parsing geography...');
+            const data = parseOSMData(raw, lat, lng);
+            this.osmData = data;
+
+            setProgress(55,'Clearing old world...');
+            this.clearWorld();
+
+            setProgress(65,'Building ground...');
+            this.buildGround();
+
+            setProgress(72,'Placing buildings...');
+            this.buildingBuilder.build(data.buildings);
+
+            setProgress(85,'Drawing roads...');
+            this.roadBuilder.build(data.roads);
+
+            setProgress(93,'Placing strategic points...');
+            this.poiBuilder.build(data.pois);
+
+            setProgress(96,'Placing emitters...');
+            this.unitManager.build(data.pois);
+
+            setProgress(100,'World ready!');
+            setTimeout(()=>showLoading(false), 600);
+
+            setStatus(
+                `📍 ${lat.toFixed(4)}, ${lng.toFixed(4)}  |  ` +
+                `🏢 ${data.buildings.length} buildings  |  ` +
+                `🛣️ ${data.roads.length} roads  |  ` +
+                `⚔️ ${data.pois.length} points of interest`
+            );
+
+        } catch(err) {
+            console.error(err);
+            showLoading(false);
+            showError('Failed to load map data. Overpass API may be busy — wait 30 seconds and try again. ' + err.message);
+            setStatus('❌ Load failed — see error above');
+        }
+
+        this.isLoading = false;
+    }
+
+    clearWorld() {
+        this.buildingBuilder.clear();
+        this.roadBuilder.clear();
+        this.poiBuilder.clear();
+        this.unitManager.clear();
+        // remove ground
+        if(this.groundMesh){ this.worldGroup.remove(this.groundMesh); this.groundMesh=null; }
+        if(this.gridMesh){   this.worldGroup.remove(this.gridMesh);   this.gridMesh=null;   }
+    }
+
+    buildGround() {
+        // Create a procedural grid texture for the ground
+        const canvas = document.createElement('canvas');
+        canvas.width = 512;
+        canvas.height = 512;
+        const ctx = canvas.getContext('2d');
+        
+        // Base color
+        ctx.fillStyle = CONFIG.style.groundColor;
+        ctx.fillRect(0, 0, 512, 512);
+        
+        // Grid lines
+        ctx.strokeStyle = 'rgba(255, 255, 255, 0.05)';
+        ctx.lineWidth = 2;
+        
+        // Small grid
+        for(let i=0; i<=512; i+=32) {
+            ctx.beginPath(); ctx.moveTo(i, 0); ctx.lineTo(i, 512); ctx.stroke();
+            ctx.beginPath(); ctx.moveTo(0, i); ctx.lineTo(512, i); ctx.stroke();
+        }
+        
+        // Large grid
+        ctx.strokeStyle = 'rgba(255, 255, 255, 0.1)';
+        ctx.lineWidth = 4;
+        for(let i=0; i<=512; i+=128) {
+            ctx.beginPath(); ctx.moveTo(i, 0); ctx.lineTo(i, 512); ctx.stroke();
+            ctx.beginPath(); ctx.moveTo(0, i); ctx.lineTo(512, i); ctx.stroke();
+        }
+
+        const tex = new THREE.CanvasTexture(canvas);
+        tex.wrapS = THREE.RepeatWrapping;
+        tex.wrapT = THREE.RepeatWrapping;
+        // Repeat the texture many times across the large ground plane
+        tex.repeat.set(CONFIG.world.groundSize / 50, CONFIG.world.groundSize / 50);
+
+        const geo=new THREE.PlaneGeometry(CONFIG.world.groundSize,CONFIG.world.groundSize);
+        const mat=new THREE.MeshLambertMaterial({
+            color: 0xffffff, // Use white so the canvas texture colors show through
+            map: tex
+        });
+        
+        this.groundMesh=new THREE.Mesh(geo,mat);
+        this.groundMesh.rotation.x=-Math.PI/2;
+        this.groundMesh.receiveShadow=true;
+        this.worldGroup.add(this.groundMesh);
+
+        // We can remove the old GridHelper since we have a textured grid now
+        // this.gridMesh=new THREE.GridHelper(CONFIG.world.groundSize,100,0x1a2a3a,0x0d1520);
+        // this.gridMesh.position.y=0.1;
+        // this.worldGroup.add(this.gridMesh);
+    }
+
+    // ---- TWEAKPANE UI ----
+    setupUI() {
+        const isMobile = window.innerWidth <= 768;
+        this.pane=new Tweakpane.Pane({title:'🎨 World Sandbox',expanded:!isMobile});
+
+        // AI Textures
+        const aif = this.pane.addFolder({title:'✨ AI Textures',expanded:false});
+        CONFIG.ai = { imageSize: '1K' };
+        aif.addInput(CONFIG.ai, 'imageSize', {
+            options: { '1K': '1K', '2K': '2K', '4K': '4K' },
+            label: 'Resolution'
+        });
+        aif.addButton({title:'Generate Ground Texture'}).on('click', () => this.generateAIGroundTexture());
+        aif.addButton({title:'Generate Building Textures'}).on('click', () => this.generateAIBuildingTextures());
+
+        // World
+        const wf=this.pane.addFolder({title:'🌍 World',expanded:false});
+        wf.addInput(CONFIG.world,'radius',{min:200,max:2000,step:100,label:'Radius (m)'});
+        wf.addInput(CONFIG.world,'buildingHeightScale',{min:0.1,max:5,step:0.1,label:'Bldg Height'})
+          .on('change',()=>{ this.buildingBuilder.clear(); this.buildingBuilder.build(this.osmData?.buildings||[]); });
+        wf.addInput(CONFIG.world,'roadWidth',{min:0.5,max:8,step:0.5,label:'Road Width'})
+          .on('change',()=>{ this.roadBuilder.clear(); this.roadBuilder.build(this.osmData?.roads||[]); });
+
+        // Sky
+        const sf=this.pane.addFolder({title:'🌌 Sky & Fog',expanded:false});
+        sf.addInput(CONFIG.style,'skyColor',{label:'Sky'})
+          .on('change',ev=>{ this.scene.background.set(ev.value); });
+        sf.addInput(CONFIG.style,'fogColor',{label:'Fog Color'})
+          .on('change',ev=>{ this.scene.fog.color.set(ev.value); });
+        sf.addInput(CONFIG.style,'fogNear',{min:50,max:800,step:10,label:'Fog Near'})
+          .on('change',()=>{ this.scene.fog.near=CONFIG.style.fogNear; });
+        sf.addInput(CONFIG.style,'fogFar',{min:200,max:2000,step:10,label:'Fog Far'})
+          .on('change',()=>{ this.scene.fog.far=CONFIG.style.fogFar; });
+
+        // Ground
+        const gf=this.pane.addFolder({title:'🌱 Ground',expanded:false});
+        gf.addInput(CONFIG.style,'groundColor',{label:'Color'})
+            .on('change',()=>{ 
+                // Rebuild ground to update the canvas texture color
+                if(this.groundMesh) {
+                    this.worldGroup.remove(this.groundMesh);
+                    this.groundMesh.geometry.dispose();
+                    this.groundMesh.material.map.dispose();
+                    this.groundMesh.material.dispose();
+                }
+                this.buildGround(); 
+            });
+
+        // Lighting
+        const lf=this.pane.addFolder({title:'💡 Lighting',expanded:false});
+        lf.addInput(CONFIG.style,'ambientIntensity',{min:0,max:2,step:0.05,label:'Ambient'})
+          .on('change',()=>{ this.ambientLight.intensity=CONFIG.style.ambientIntensity; });
+        lf.addInput(CONFIG.style,'ambientColor',{label:'Ambient Color'})
+          .on('change',ev=>{ this.ambientLight.color.set(ev.value); });
+        lf.addInput(CONFIG.style,'directionalIntensity',{min:0,max:3,step:0.05,label:'Sun/Moon'})
+          .on('change',()=>{ this.dirLight.intensity=CONFIG.style.directionalIntensity; });
+        lf.addInput(CONFIG.style,'directionalColor',{label:'Sun/Moon Color'})
+          .on('change',ev=>{ this.dirLight.color.set(ev.value); });
+        lf.addInput(CONFIG.style,'accentColor',{label:'Accent Color'})
+          .on('change',ev=>{ this.accent1.color.set(ev.value); this.accent2.color.set(ev.value); });
+        lf.addInput(CONFIG.style,'accentIntensity',{min:0,max:5,step:0.1,label:'Accent Intensity'})
+          .on('change',()=>{ this.accent1.intensity=CONFIG.style.accentIntensity; this.accent2.intensity=CONFIG.style.accentIntensity*0.7; });
+
+        // POIs
+        const pf=this.pane.addFolder({title:'⚔️ Strategic Points',expanded:false});
+        pf.addInput(CONFIG.style,'poiColor',{label:'Color'})
+          .on('change',()=>{ if(this.poiBuilder.mat){ this.poiBuilder.mat.color.set(CONFIG.style.poiColor); this.poiBuilder.mat.emissive.set(CONFIG.style.poiColor); } });
+        pf.addInput(CONFIG.style,'poiGlowIntensity',{min:0,max:5,step:0.1,label:'Glow'})
+          .on('change',()=>{ this.poiBuilder.lights.forEach(l=>{ l.intensity=CONFIG.style.poiGlowIntensity; }); });
+
+        // Presets
+        const pref=this.pane.addFolder({title:'🎭 Presets',expanded:true});
+        pref.addButton({title:'🌑 Dark Tactical'}).on('click',()=>this.applyPreset('darkTactical'));
+        pref.addButton({title:'🌿 Ancient World'}).on('click',()=>this.applyPreset('ancientWorld'));
+        pref.addButton({title:'⚡ Neon City'}).on('click',()=>this.applyPreset('neonCity'));
+        pref.addButton({title:'🏔️ Stone & Iron'}).on('click',()=>this.applyPreset('stoneIron'));
+    }
+
+    applyPreset(name) {
+        const presets = {
+            darkTactical:{
+                skyColor:'#0a0e1a',fogColor:'#0a0e1a',groundColor:'#1a2233',
+                buildingColor:'#2a3a5c',buildingEmissive:'#0a1020',roadColor:'#0d1526',
+                ambientColor:'#334466',directionalColor:'#aabbff',
+                accentColor:'#4a9eff',poiColor:'#ff6b35'
+            },
+            ancientWorld:{
+                skyColor:'#2d1b00',fogColor:'#3d2b10',groundColor:'#3d2b10',
+                buildingColor:'#8b6914',buildingEmissive:'#3d2500',roadColor:'#5c3d00',
+                ambientColor:'#664422',directionalColor:'#ffcc77',
+                accentColor:'#ff8833',poiColor:'#ffcc00'
+            },
+            neonCity:{
+                skyColor:'#050010',fogColor:'#050010',groundColor:'#0a0015',
+                buildingColor:'#1a0a2e',buildingEmissive:'#0a0020',roadColor:'#050010',
+                ambientColor:'#220033',directionalColor:'#ff00ff',
+                accentColor:'#00ffff',poiColor:'#ff00ff'
+            },
+            stoneIron:{
+                skyColor:'#1a1a20',fogColor:'#1a1a20',groundColor:'#2a2a30',
+                buildingColor:'#4a4a55',buildingEmissive:'#1a1a20',roadColor:'#1a1a25',
+                ambientColor:'#333340',directionalColor:'#ccccdd',
+                accentColor:'#aaaacc',poiColor:'#cc4444'
+            }
+        };
+        const p=presets[name];
+        if(!p) return;
+        Object.assign(CONFIG.style,p);
+        this.scene.background.set(p.skyColor);
+        this.scene.fog.color.set(p.fogColor);
+        if(this.groundMesh) this.groundMesh.material.color.set(p.groundColor);
+        this.ambientLight.color.set(p.ambientColor);
+        this.dirLight.color.set(p.directionalColor);
+        this.accent1.color.set(p.accentColor);
+        this.accent2.color.set(p.accentColor);
+        if(this.poiBuilder.mat){
+            this.poiBuilder.mat.color.set(p.poiColor);
+            this.poiBuilder.mat.emissive.set(p.poiColor);
+        }
+        this.pane.refresh();
+    }
+
+    // ---- AI TEXTURE GENERATION ----
+    async ensureApiKey() {
+        if (window.aistudio && window.aistudio.hasSelectedApiKey) {
+            const hasKey = await window.aistudio.hasSelectedApiKey();
+            if (!hasKey) {
+                await window.aistudio.openSelectKey();
+            }
+        }
+    }
+
+    async generateAIGroundTexture() {
+        if (this.isGeneratingAI) return;
+        this.isGeneratingAI = true;
+        try {
+            await this.ensureApiKey();
+            showLoading(true);
+            setProgress(10, 'Prompting Nano Banana Pro for ground texture...');
+            
+            const apiKey = process.env.API_KEY || process.env.GEMINI_API_KEY;
+            const ai = new GoogleGenAI({ apiKey: apiKey });
+            const response = await ai.models.generateContent({
+                model: 'gemini-3-pro-image-preview',
+                contents: {
+                    parts: [{ text: "A seamless top-down texture of realistic concrete and asphalt ground, tactical map style, high quality, architectural rendering" }]
+                },
+                config: {
+                    imageConfig: {
+                        aspectRatio: "1:1",
+                        imageSize: CONFIG.ai.imageSize
+                    }
+                }
+            });
+            
+            setProgress(80, 'Applying texture...');
+            let b64 = null;
+            for (const part of response.candidates[0].content.parts) {
+                if (part.inlineData) {
+                    b64 = `data:image/png;base64,${part.inlineData.data}`;
+                    break;
+                }
+            }
+            
+            if (!b64) throw new Error("No image generated");
+            
+            const img = new Image();
+            img.src = b64;
+            img.onload = () => {
+                const tex = new THREE.Texture(img);
+                tex.needsUpdate = true;
+                tex.wrapS = THREE.RepeatWrapping;
+                tex.wrapT = THREE.RepeatWrapping;
+                tex.repeat.set(CONFIG.world.groundSize / 100, CONFIG.world.groundSize / 100);
+                
+                if (this.groundMesh) {
+                    if (this.groundMesh.material.map) this.groundMesh.material.map.dispose();
+                    this.groundMesh.material.map = tex;
+                    this.groundMesh.material.color.setHex(0xffffff);
+                    this.groundMesh.material.needsUpdate = true;
+                }
+                showLoading(false);
+                this.isGeneratingAI = false;
+            };
+        } catch (err) {
+            console.error(err);
+            showLoading(false);
+            
+            const errMsg = err.message || "";
+            if (errMsg.includes("Requested entity was not found") || errMsg.includes("PERMISSION_DENIED") || errMsg.includes("403")) {
+                showError("Please select a PAID API key. Free keys do not have access to Nano Banana Pro.");
+                if (window.aistudio && window.aistudio.openSelectKey) {
+                    window.aistudio.openSelectKey();
+                }
+            } else {
+                showError("AI Generation failed: " + errMsg);
+            }
+            this.isGeneratingAI = false;
+        }
+    }
+
+    async generateAIBuildingTextures() {
+        if (this.isGeneratingAI) return;
+        this.isGeneratingAI = true;
+        try {
+            await this.ensureApiKey();
+            showLoading(true);
+            setProgress(10, 'Prompting Nano Banana Pro for building textures...');
+            
+            const apiKey = process.env.API_KEY || process.env.GEMINI_API_KEY;
+            const ai = new GoogleGenAI({ apiKey: apiKey });
+            
+            const response = await ai.models.generateContent({
+                model: 'gemini-3-pro-image-preview',
+                contents: {
+                    parts: [{ text: "A seamless texture of a modern building facade, flat lighting, realistic, architectural photography, high quality windows and concrete" }]
+                },
+                config: {
+                    imageConfig: {
+                        aspectRatio: "1:1",
+                        imageSize: CONFIG.ai.imageSize
+                    }
+                }
+            });
+            
+            setProgress(80, 'Applying texture...');
+            let b64 = null;
+            for (const part of response.candidates[0].content.parts) {
+                if (part.inlineData) {
+                    b64 = `data:image/png;base64,${part.inlineData.data}`;
+                    break;
+                }
+            }
+            
+            if (!b64) throw new Error("No image generated");
+            
+            const img = new Image();
+            img.src = b64;
+            img.onload = () => {
+                const tex = new THREE.Texture(img);
+                tex.needsUpdate = true;
+                
+                // Override the TextureGen to return this texture for everything
+                this.buildingBuilder.texGen.get = function(type, floors) {
+                    const clonedTex = tex.clone();
+                    clonedTex.needsUpdate = true;
+                    clonedTex.wrapS = THREE.RepeatWrapping;
+                    clonedTex.wrapT = THREE.RepeatWrapping;
+                    return clonedTex;
+                };
+                
+                // Rebuild buildings
+                this.buildingBuilder.clear();
+                this.buildingBuilder.build(this.osmData?.buildings || []);
+                
+                showLoading(false);
+                this.isGeneratingAI = false;
+            };
+        } catch (err) {
+            console.error(err);
+            showLoading(false);
+            
+            const errMsg = err.message || "";
+            if (errMsg.includes("Requested entity was not found") || errMsg.includes("PERMISSION_DENIED") || errMsg.includes("403")) {
+                showError("Please select a PAID API key. Free keys do not have access to Nano Banana Pro.");
+                if (window.aistudio && window.aistudio.openSelectKey) {
+                    window.aistudio.openSelectKey();
+                }
+            } else {
+                showError("AI Generation failed: " + errMsg);
+            }
+            this.isGeneratingAI = false;
+        }
+    }
+
+    // ---- EVENTS ----
+    setupEvents() {
+        // Load button
+        document.getElementById('load-btn').addEventListener('click', () => {
+            const val = document.getElementById('location-input').value.trim();
+            const parts = val.split(',');
+            if(parts.length !== 2) { showError('Enter coordinates as: lat,lng'); return; }
+            const lat = parseFloat(parts[0].trim());
+            const lng = parseFloat(parts[1].trim());
+            if(isNaN(lat)||isNaN(lng)) { showError('Invalid coordinates'); return; }
+            if(lat<-90||lat>90)  { showError('Latitude must be between -90 and 90'); return; }
+            if(lng<-180||lng>180){ showError('Longitude must be between -180 and 180'); return; }
+            this.centerLat=lat;
+            this.centerLng=lng;
+            this.loadWorld(lat,lng);
+        });
+
+        // Enter key
+        document.getElementById('location-input').addEventListener('keydown', e => {
+            if(e.key==='Enter') document.getElementById('load-btn').click();
+        });
+
+        // GPS button
+        document.getElementById('gps-btn').addEventListener('click', () => {
+            if (!navigator.geolocation) {
+                showError('Geolocation is not supported by your browser');
+                return;
+            }
+            const btn = document.getElementById('gps-btn');
+            btn.textContent = '⏳';
+            navigator.geolocation.getCurrentPosition(
+                (position) => {
+                    btn.textContent = '📍';
+                    const lat = position.coords.latitude.toFixed(5);
+                    const lng = position.coords.longitude.toFixed(5);
+                    document.getElementById('location-input').value = `${lat},${lng}`;
+                    document.getElementById('load-btn').click();
+                },
+                (error) => {
+                    btn.textContent = '📍';
+                    showError('Unable to retrieve your location: ' + error.message);
+                },
+                { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
+            );
+        });
+
+        // Export
+        document.getElementById('export-btn').addEventListener('click', () => {
+            const json=JSON.stringify(CONFIG,null,2);
+            const blob=new Blob([json],{type:'application/json'});
+            const url=URL.createObjectURL(blob);
+            const a=document.createElement('a');
+            a.href=url; a.download='world-config.json'; a.click();
+            URL.revokeObjectURL(url);
+        });
+
+        // Resize
+        window.addEventListener('resize', () => {
+            this.camera.aspect=window.innerWidth/window.innerHeight;
+            this.camera.updateProjectionMatrix();
+            this.renderer.setSize(window.innerWidth,window.innerHeight);
+        });
+    }
+
+    // ---- RENDER LOOP ----
+    animate() {
+        requestAnimationFrame(()=>this.animate());
+        
+        const now = performance.now();
+        const dt = this.lastTime ? (now - this.lastTime) / 1000 : 0.016;
+        this.lastTime = now;
+
+        this.controls.update();
+        this.poiBuilder.update();
+        this.unitManager.update(dt);
+        this.renderer.render(this.scene,this.camera);
+    }
+}
+
+// ============================================================
+// BOOT
+// ============================================================
+window.addEventListener('load', () => {
+    // Quick sanity check that dependencies loaded
+    if(typeof THREE === 'undefined') {
+        document.body.innerHTML = '<p style="color:red;padding:20px;">Three.js failed to load. Check your internet connection.</p>';
+        return;
+    }
+    if(typeof Tweakpane === 'undefined') {
+        document.body.innerHTML = '<p style="color:red;padding:20px;">Tweakpane failed to load. Check your internet connection.</p>';
+        return;
+    }
+    window.sandbox = new Sandbox();
+});
+
+</script>
+</body>
+</html>
